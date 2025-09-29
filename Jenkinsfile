@@ -1,4 +1,7 @@
 #!/usr/bin/env groovy
+// Jenkins Pipeline for simple-snmpd
+// Simple SNMP Daemon - A lightweight and secure SNMP monitoring daemon
+// Copyright 2024 SimpleDaemons
 
 pipeline {
     agent any
@@ -6,64 +9,43 @@ pipeline {
     parameters {
         choice(
             name: 'BUILD_TYPE',
-            choices: ['Release', 'Debug', 'RelWithDebInfo'],
-            description: 'CMake build type'
+            choices: ['Release', 'Debug'],
+            description: 'Build type'
         )
         choice(
-            name: 'DOCKER_REGISTRY',
-            choices: ['docker.io', 'ghcr.io', 'quay.io'],
-            description: 'Docker registry to push images'
-        )
-        string(
-            name: 'DOCKER_NAMESPACE',
-            defaultValue: 'simpledaemons',
-            description: 'Docker namespace for images'
+            name: 'PLATFORM',
+            choices: ['linux', 'macos', 'windows'],
+            description: 'Target platform'
         )
         booleanParam(
-            name: 'ENABLE_TESTS',
+            name: 'RUN_TESTS',
             defaultValue: true,
-            description: 'Run unit and integration tests'
+            description: 'Run tests'
         )
         booleanParam(
-            name: 'ENABLE_SECURITY_SCAN',
+            name: 'RUN_ANALYSIS',
             defaultValue: true,
-            description: 'Run security scanning'
+            description: 'Run static analysis'
         )
         booleanParam(
-            name: 'ENABLE_COVERAGE',
-            defaultValue: true,
-            description: 'Generate code coverage reports'
+            name: 'CREATE_PACKAGES',
+            defaultValue: false,
+            description: 'Create distribution packages'
         )
         booleanParam(
-            name: 'BUILD_DOCKER_IMAGES',
-            defaultValue: true,
-            description: 'Build and push Docker images'
-        )
-        booleanParam(
-            name: 'BUILD_PACKAGES',
-            defaultValue: true,
-            description: 'Build platform-specific packages'
-        )
-        choice(
-            name: 'TARGET_ARCHITECTURES',
-            choices: ['x86_64', 'arm64', 'multi-arch'],
-            description: 'Target architectures for Docker builds'
+            name: 'DEPLOY',
+            defaultValue: false,
+            description: 'Deploy artifacts'
         )
     }
     
     environment {
         PROJECT_NAME = 'simple-snmpd'
-        VERSION = sh(
-            script: 'git describe --tags --always --dirty',
-            returnStdout: true
-        ).trim()
-        BUILD_NUMBER = "${env.BUILD_NUMBER}"
-        DOCKER_IMAGE = "${params.DOCKER_NAMESPACE}/${PROJECT_NAME}"
-        DOCKER_TAG = "${VERSION}-${BUILD_NUMBER}"
-        DOCKER_LATEST_TAG = "latest"
-        COVERAGE_THRESHOLD = 80
-        SONAR_PROJECT_KEY = 'simple-snmpd'
-        SONAR_ORGANIZATION = 'simpledaemons'
+        VERSION = '${env.BUILD_NUMBER}'
+        BUILD_DIR = 'build'
+        DIST_DIR = 'dist'
+        DOCKER_IMAGE = "${PROJECT_NAME}:${VERSION}"
+        DOCKER_REGISTRY = 'your-registry.com'
     }
     
     options {
@@ -77,105 +59,63 @@ pipeline {
     stages {
         stage('Checkout') {
             steps {
+                checkout scm
                 script {
-                    checkout scm
-                    sh 'git clean -fd'
+                    env.GIT_COMMIT_SHORT = sh(
+                        script: 'git rev-parse --short HEAD',
+                        returnStdout: true
+                    ).trim()
                 }
             }
         }
         
-        stage('Environment Setup') {
+        stage('Setup') {
             parallel {
-                stage('Detect Platform') {
-                    steps {
-                        script {
-                            if (isUnix()) {
-                                env.PLATFORM = sh(script: 'uname -s', returnStdout: true).trim().toLowerCase()
-                                env.ARCH = sh(script: 'uname -m', returnStdout: true).trim()
-                            } else {
-                                env.PLATFORM = 'windows'
-                                env.ARCH = 'x86_64'
-                            }
-                            echo "Building on ${env.PLATFORM} (${env.ARCH})"
+                stage('Linux Setup') {
+                    when {
+                        anyOf {
+                            equals expected: 'linux', actual: params.PLATFORM
+                            equals expected: 'all', actual: params.PLATFORM
                         }
+                    }
+                    steps {
+                        sh '''
+                            sudo apt-get update -qq
+                            sudo apt-get install -y -qq build-essential cmake libssl-dev libjsoncpp-dev pkg-config
+                            sudo apt-get install -y -qq clang-format cppcheck python3-pip
+                            pip3 install --user bandit semgrep
+                        '''
                     }
                 }
                 
-                stage('Install Dependencies') {
-                    steps {
-                        script {
-                            if (isUnix()) {
-                                sh '''
-                                    # Install build dependencies
-                                    if command -v apt-get >/dev/null 2>&1; then
-                                        sudo apt-get update
-                                        sudo apt-get install -y build-essential cmake pkg-config libssl-dev
-                                    elif command -v yum >/dev/null 2>&1; then
-                                        sudo yum update -y
-                                        sudo yum install -y gcc-c++ cmake3 openssl-devel pkgconfig
-                                    elif command -v brew >/dev/null 2>&1; then
-                                        brew install cmake openssl pkg-config
-                                    fi
-                                    
-                                    # Install development tools
-                                    if [ "${ENABLE_TESTS}" = "true" ]; then
-                                        if command -v apt-get >/dev/null 2>&1; then
-                                            sudo apt-get install -y valgrind gdb
-                                        elif command -v yum >/dev/null 2>&1; then
-                                            sudo yum install -y valgrind gdb
-                                        fi
-                                    fi
-                                    
-                                    # Install security scanning tools
-                                    if [ "${ENABLE_SECURITY_SCAN}" = "true" ]; then
-                                        if command -v apt-get >/dev/null 2>&1; then
-                                            sudo apt-get install -y cppcheck
-                                        elif command -v yum >/dev/null 2>&1; then
-                                            sudo yum install -y cppcheck
-                                        fi
-                                    fi
-                                '''
-                            } else {
-                                bat '''
-                                    echo "Windows build - dependencies should be pre-installed"
-                                    echo "Required: Visual Studio 2019+, CMake, OpenSSL"
-                                '''
-                            }
+                stage('macOS Setup') {
+                    when {
+                        anyOf {
+                            equals expected: 'macos', actual: params.PLATFORM
+                            equals expected: 'all', actual: params.PLATFORM
                         }
                     }
-                }
-            }
-        }
-        
-        stage('Code Quality') {
-            parallel {
-                stage('Lint') {
                     steps {
-                        script {
-                            if (isUnix()) {
-                                sh '''
-                                    echo "Running code linting..."
-                                    find src include -name "*.cpp" -o -name "*.hpp" | xargs cppcheck --enable=all --std=c++17 --suppress=missingIncludeSystem --error-exitcode=1 || true
-                                '''
-                            }
-                        }
+                        sh '''
+                            brew update
+                            brew install cmake openssl jsoncpp clang-format cppcheck
+                            pip3 install --user bandit semgrep
+                        '''
                     }
                 }
                 
-                stage('Format Check') {
-                    steps {
-                        script {
-                            if (isUnix()) {
-                                sh '''
-                                    echo "Checking code formatting..."
-                                    if command -v clang-format >/dev/null 2>&1; then
-                                        find src include -name "*.cpp" -o -name "*.hpp" | xargs clang-format --dry-run --Werror || true
-                                    else
-                                        echo "clang-format not available, skipping format check"
-                                    fi
-                                '''
-                            }
+                stage('Windows Setup') {
+                    when {
+                        anyOf {
+                            equals expected: 'windows', actual: params.PLATFORM
+                            equals expected: 'all', actual: params.PLATFORM
                         }
+                    }
+                    steps {
+                        bat '''
+                            echo "Windows setup would go here"
+                            echo "Install Visual Studio, CMake, vcpkg, etc."
+                        '''
                     }
                 }
             }
@@ -185,81 +125,51 @@ pipeline {
             parallel {
                 stage('Linux Build') {
                     when {
-                        expression { isUnix() && env.PLATFORM == 'linux' }
+                        anyOf {
+                            equals expected: 'linux', actual: params.PLATFORM
+                            equals expected: 'all', actual: params.PLATFORM
+                        }
                     }
                     steps {
                         sh '''
-                            echo "Building for Linux..."
-                            mkdir -p build
-                            cd build
-                            
-                            # Configure with CMake
-                            cmake .. \
-                                -DCMAKE_BUILD_TYPE=${BUILD_TYPE} \
-                                -DBUILD_TESTS=${ENABLE_TESTS} \
-                                -DENABLE_LOGGING=ON \
-                                -DENABLE_IPV6=ON
-                            
-                            # Build
+                            mkdir -p ${BUILD_DIR}
+                            cd ${BUILD_DIR}
+                            cmake .. -DCMAKE_BUILD_TYPE=${BUILD_TYPE}
                             make -j$(nproc)
-                            
-                            # Build packages if requested
-                            if [ "${BUILD_PACKAGES}" = "true" ]; then
-                                make package
-                            fi
                         '''
                     }
                 }
                 
                 stage('macOS Build') {
                     when {
-                        expression { isUnix() && env.PLATFORM == 'darwin' }
+                        anyOf {
+                            equals expected: 'macos', actual: params.PLATFORM
+                            equals expected: 'all', actual: params.PLATFORM
+                        }
                     }
                     steps {
                         sh '''
-                            echo "Building for macOS..."
-                            mkdir -p build
-                            cd build
-                            
-                            # Configure with CMake
-                            cmake .. \
-                                -DCMAKE_BUILD_TYPE=${BUILD_TYPE} \
-                                -DBUILD_TESTS=${ENABLE_TESTS} \
-                                -DENABLE_LOGGING=ON \
-                                -DENABLE_IPV6=ON
-                            
-                            # Build
+                            mkdir -p ${BUILD_DIR}
+                            cd ${BUILD_DIR}
+                            cmake .. -DCMAKE_BUILD_TYPE=${BUILD_TYPE}
                             make -j$(sysctl -n hw.ncpu)
-                            
-                            # Build packages if requested
-                            if [ "${BUILD_PACKAGES}" = "true" ]; then
-                                make package
-                            fi
                         '''
                     }
                 }
                 
                 stage('Windows Build') {
                     when {
-                        expression { !isUnix() }
+                        anyOf {
+                            equals expected: 'windows', actual: params.PLATFORM
+                            equals expected: 'all', actual: params.PLATFORM
+                        }
                     }
                     steps {
                         bat '''
-                            echo "Building for Windows..."
                             mkdir build
                             cd build
-                            
-                            rem Configure with CMake
                             cmake .. -G "Visual Studio 16 2019" -A x64 -DCMAKE_BUILD_TYPE=%BUILD_TYPE%
-                            
-                            rem Build
                             cmake --build . --config %BUILD_TYPE%
-                            
-                            rem Build packages if requested
-                            if "%BUILD_PACKAGES%"=="true" (
-                                cpack -G WIX
-                                cpack -G ZIP
-                            )
                         '''
                     }
                 }
@@ -268,240 +178,81 @@ pipeline {
         
         stage('Test') {
             when {
-                expression { params.ENABLE_TESTS == true }
+                expression { params.RUN_TESTS == true }
             }
             parallel {
-                stage('Unit Tests') {
-                    steps {
-                        script {
-                            if (isUnix()) {
-                                sh '''
-                                    echo "Running unit tests..."
-                                    cd build
-                                    
-                                    # Run tests with verbose output
-                                    ctest --output-on-failure --verbose
-                                    
-                                    # Generate test report
-                                    ctest --output-junit test-results.xml
-                                '''
-                            } else {
-                                bat '''
-                                    echo "Running unit tests on Windows..."
-                                    cd build
-                                    ctest --output-on-failure --verbose -C %BUILD_TYPE%
-                                '''
-                            }
-                        }
-                    }
-                    post {
-                        always {
-                            publishTestResults testResultsPattern: 'build/test-results.xml'
-                        }
-                    }
-                }
-                
-                stage('Integration Tests') {
-                    steps {
-                        script {
-                            if (isUnix()) {
-                                sh '''
-                                    echo "Running integration tests..."
-                                    cd build
-                                    
-                                    # Test daemon startup
-                                    ./bin/simple-snmpd --test-config -c ../config/simple-snmpd.conf
-                                    
-                                    # Test version output
-                                    ./bin/simple-snmpd --version
-                                    
-                                    # Test help output
-                                    ./bin/simple-snmpd --help
-                                '''
-                            } else {
-                                bat '''
-                                    echo "Running integration tests on Windows..."
-                                    cd build
-                                    bin\\%BUILD_TYPE%\\simple-snmpd.exe --test-config -c ..\\config\\simple-snmpd.conf
-                                    bin\\%BUILD_TYPE%\\simple-snmpd.exe --version
-                                    bin\\%BUILD_TYPE%\\simple-snmpd.exe --help
-                                '''
-                            }
-                        }
-                    }
-                }
-                
-                stage('Memory Tests') {
+                stage('Linux Test') {
                     when {
-                        expression { isUnix() && params.ENABLE_TESTS == true }
-                    }
-                    steps {
-                        sh '''
-                            echo "Running memory tests with Valgrind..."
-                            cd build
-                            
-                            # Run tests with Valgrind
-                            if command -v valgrind >/dev/null 2>&1; then
-                                valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes --error-exitcode=1 ./bin/test_snmp_packet
-                                valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes --error-exitcode=1 ./bin/test_snmp_mib
-                                valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes --error-exitcode=1 ./bin/test_snmp_security
-                            else
-                                echo "Valgrind not available, skipping memory tests"
-                            fi
-                        '''
-                    }
-                }
-            }
-        }
-        
-        stage('Code Coverage') {
-            when {
-                expression { params.ENABLE_COVERAGE == true && isUnix() }
-            }
-            steps {
-                sh '''
-                    echo "Generating code coverage report..."
-                    cd build
-                    
-                    # Configure with coverage flags
-                    cmake .. \
-                        -DCMAKE_BUILD_TYPE=Debug \
-                        -DCMAKE_CXX_FLAGS="--coverage -fprofile-arcs -ftest-coverage" \
-                        -DCMAKE_C_FLAGS="--coverage -fprofile-arcs -ftest-coverage"
-                    
-                    # Rebuild with coverage
-                    make clean
-                    make -j$(nproc)
-                    
-                    # Run tests to generate coverage data
-                    ctest --output-on-failure
-                    
-                    # Generate coverage report
-                    if command -v gcovr >/dev/null 2>&1; then
-                        gcovr --xml-pretty --exclude-unreachable-branches --exclude-throw-branches --output coverage.xml
-                        gcovr --html --exclude-unreachable-branches --exclude-throw-branches --output coverage.html
-                    elif command -v lcov >/dev/null 2>&1; then
-                        lcov --capture --directory . --output-file coverage.info
-                        lcov --remove coverage.info '/usr/*' --output-file coverage.info
-                        genhtml coverage.info --output-directory coverage_html
-                    fi
-                '''
-            }
-            post {
-                always {
-                    publishCoverage adapters: [
-                        coberturaAdapter('build/coverage.xml')
-                    ], sourceFileResolver: sourceFiles('STORE_LAST_BUILD')
-                }
-            }
-        }
-        
-        stage('Security Scan') {
-            when {
-                expression { params.ENABLE_SECURITY_SCAN == true }
-            }
-            steps {
-                script {
-                    if (isUnix()) {
-                        sh '''
-                            echo "Running security scan..."
-                            
-                            # Cppcheck security scan
-                            if command -v cppcheck >/dev/null 2>&1; then
-                                cppcheck --enable=all --std=c++17 --suppress=missingIncludeSystem \
-                                    --xml --xml-version=2 src include 2> security-report.xml || true
-                            fi
-                            
-                            # Bandit security scan (if available)
-                            if command -v bandit >/dev/null 2>&1; then
-                                find . -name "*.py" | xargs bandit -f json -o bandit-report.json || true
-                            fi
-                        '''
-                    }
-                }
-            }
-            post {
-                always {
-                    publishHTML([
-                        allowMissing: false,
-                        alwaysLinkToLastBuild: true,
-                        keepAll: true,
-                        reportDir: '.',
-                        reportFiles: 'security-report.xml',
-                        reportName: 'Security Report'
-                    ])
-                }
-            }
-        }
-        
-        stage('Docker Build') {
-            when {
-                expression { params.BUILD_DOCKER_IMAGES == true }
-            }
-            parallel {
-                stage('Build Docker Images') {
-                    steps {
-                        script {
-                            def dockerfile = 'Dockerfile'
-                            def platforms = []
-                            
-                            switch(params.TARGET_ARCHITECTURES) {
-                                case 'x86_64':
-                                    platforms = ['linux/amd64']
-                                    break
-                                case 'arm64':
-                                    platforms = ['linux/arm64']
-                                    break
-                                case 'multi-arch':
-                                    platforms = ['linux/amd64', 'linux/arm64', 'linux/arm/v7']
-                                    break
-                            }
-                            
-                            def buildArgs = [
-                                "--platform=${platforms.join(',')}",
-                                "--tag=${env.DOCKER_IMAGE}:${env.DOCKER_TAG}",
-                                "--tag=${env.DOCKER_IMAGE}:${env.DOCKER_LATEST_TAG}",
-                                "--build-arg=VERSION=${env.VERSION}",
-                                "--build-arg=BUILD_NUMBER=${env.BUILD_NUMBER}",
-                                "--file=${dockerfile}",
-                                "."
-                            ]
-                            
-                            if (platforms.size() > 1) {
-                                // Multi-architecture build
-                                sh """
-                                    echo "Building multi-architecture Docker images..."
-                                    docker buildx create --use --name multiarch-builder || true
-                                    docker buildx build ${buildArgs.join(' ')} --push
-                                """
-                            } else {
-                                // Single architecture build
-                                sh """
-                                    echo "Building Docker image for ${platforms[0]}..."
-                                    docker build ${buildArgs.join(' ')} .
-                                    
-                                    # Tag for local testing
-                                    docker tag ${env.DOCKER_IMAGE}:${env.DOCKER_TAG} ${env.DOCKER_IMAGE}:local
-                                """
-                            }
+                        anyOf {
+                            equals expected: 'linux', actual: params.PLATFORM
+                            equals expected: 'all', actual: params.PLATFORM
                         }
+                    }
+                    steps {
+                        sh '''
+                            cd ${BUILD_DIR}
+                            make test
+                        '''
                     }
                 }
                 
-                stage('Test Docker Images') {
+                stage('macOS Test') {
+                    when {
+                        anyOf {
+                            equals expected: 'macos', actual: params.PLATFORM
+                            equals expected: 'all', actual: params.PLATFORM
+                        }
+                    }
                     steps {
                         sh '''
-                            echo "Testing Docker images..."
-                            
-                            # Test basic functionality
-                            docker run --rm ${DOCKER_IMAGE}:${DOCKER_TAG} --version
-                            docker run --rm ${DOCKER_IMAGE}:${DOCKER_TAG} --help
-                            
-                            # Test configuration validation
-                            docker run --rm ${DOCKER_IMAGE}:${DOCKER_TAG} --test-config
-                            
-                            # Test daemon startup (briefly)
-                            timeout 10s docker run --rm ${DOCKER_IMAGE}:${DOCKER_TAG} || true
+                            cd ${BUILD_DIR}
+                            make test
+                        '''
+                    }
+                }
+                
+                stage('Windows Test') {
+                    when {
+                        anyOf {
+                            equals expected: 'windows', actual: params.PLATFORM
+                            equals expected: 'all', actual: params.PLATFORM
+                        }
+                    }
+                    steps {
+                        bat '''
+                            cd build
+                            ctest --output-on-failure -C %BUILD_TYPE%
+                        '''
+                    }
+                }
+            }
+        }
+        
+        stage('Analysis') {
+            when {
+                expression { params.RUN_ANALYSIS == true }
+            }
+            parallel {
+                stage('Code Style') {
+                    steps {
+                        sh '''
+                            make check-style
+                        '''
+                    }
+                }
+                
+                stage('Static Analysis') {
+                    steps {
+                        sh '''
+                            make lint
+                        '''
+                    }
+                }
+                
+                stage('Security Scan') {
+                    steps {
+                        sh '''
+                            make security-scan
                         '''
                     }
                 }
@@ -510,39 +261,49 @@ pipeline {
         
         stage('Package') {
             when {
-                expression { params.BUILD_PACKAGES == true }
+                expression { params.CREATE_PACKAGES == true }
+            }
+            steps {
+                sh '''
+                    make package
+                    ls -la ${DIST_DIR}/
+                '''
+            }
+        }
+        
+        stage('Docker') {
+            steps {
+                script {
+                    def dockerfile = 'Dockerfile'
+                    if (fileExists(dockerfile)) {
+                        sh '''
+                            docker build -t ${DOCKER_IMAGE} .
+                            docker tag ${DOCKER_IMAGE} ${DOCKER_REGISTRY}/${DOCKER_IMAGE}
+                        '''
+                    } else {
+                        echo "No Dockerfile found, skipping Docker build"
+                    }
+                }
+            }
+        }
+        
+        stage('Deploy') {
+            when {
+                expression { params.DEPLOY == true }
             }
             steps {
                 script {
-                    if (isUnix()) {
+                    // Deploy to artifact repository
+                    sh '''
+                        echo "Deploying artifacts..."
+                        # Add your deployment logic here
+                        # e.g., upload to Nexus, Artifactory, etc.
+                    '''
+                    
+                    // Deploy Docker image
+                    if (fileExists('Dockerfile')) {
                         sh '''
-                            echo "Creating packages..."
-                            cd build
-                            
-                            # Create source package
-                            make package-source
-                            
-                            # Create platform-specific packages
-                            if [ "${PLATFORM}" = "linux" ]; then
-                                make package
-                            elif [ "${PLATFORM}" = "darwin" ]; then
-                                make package
-                            fi
-                            
-                            # List created packages
-                            find . -name "*.tar.gz" -o -name "*.deb" -o -name "*.rpm" -o -name "*.dmg" -o -name "*.pkg" | head -10
-                        '''
-                    } else {
-                        bat '''
-                            echo "Creating Windows packages..."
-                            cd build
-                            
-                            rem Create Windows packages
-                            cpack -G WIX
-                            cpack -G ZIP
-                            
-                            rem List created packages
-                            dir *.msi *.zip
+                            docker push ${DOCKER_REGISTRY}/${DOCKER_IMAGE}
                         '''
                     }
                 }
@@ -552,29 +313,36 @@ pipeline {
     
     post {
         always {
-            // Archive build artifacts
-            archiveArtifacts artifacts: 'build/**/*.deb,build/**/*.rpm,build/**/*.dmg,build/**/*.pkg,build/**/*.msi,build/**/*.zip,build/**/*.tar.gz', allowEmptyArchive: true
+            // Archive artifacts
+            archiveArtifacts artifacts: 'dist/**', allowEmptyArchive: true
+            archiveArtifacts artifacts: 'build/**', allowEmptyArchive: true
             
-            // Clean up workspace
+            // Clean up
             cleanWs()
         }
         
         success {
-            script {
-                if (params.BUILD_DOCKER_IMAGES) {
-                    echo "Build successful! Docker images available:"
-                    echo "- ${env.DOCKER_IMAGE}:${env.DOCKER_TAG}"
-                    echo "- ${env.DOCKER_IMAGE}:${env.DOCKER_LATEST_TAG}"
-                }
-            }
+            echo 'Build succeeded!'
+            // Send success notification
+            emailext (
+                subject: "Build Success: ${env.JOB_NAME} - ${env.BUILD_NUMBER}",
+                body: "Build ${env.BUILD_NUMBER} succeeded for ${env.PROJECT_NAME}",
+                to: "${env.CHANGE_AUTHOR_EMAIL}"
+            )
         }
         
         failure {
-            echo "Build failed! Check the logs for details."
+            echo 'Build failed!'
+            // Send failure notification
+            emailext (
+                subject: "Build Failed: ${env.JOB_NAME} - ${env.BUILD_NUMBER}",
+                body: "Build ${env.BUILD_NUMBER} failed for ${env.PROJECT_NAME}. Check the console output for details.",
+                to: "${env.CHANGE_AUTHOR_EMAIL}"
+            )
         }
         
         unstable {
-            echo "Build unstable! Some tests may have failed."
+            echo 'Build unstable!'
         }
     }
 }

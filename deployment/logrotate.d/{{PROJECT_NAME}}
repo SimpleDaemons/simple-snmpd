@@ -1,0 +1,14 @@
+/var/log/simple-snmpd/*.log {
+    daily
+    missingok
+    rotate 52
+    compress
+    delaycompress
+    notifempty
+    create 644 _simple-snmpd _simple-snmpd
+    postrotate
+        /bin/systemctl reload simple-snmpd > /dev/null 2>&1 || true
+    endscript
+    sharedscripts
+    su _simple-snmpd _simple-snmpd
+}

@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  simple-snmpd:
+    image: simple-snmpd:latest
+    container_name: simple-snmpd
+    ports:
+      - "161:161/tcp"
+    volumes:
+      - ./config:/etc/simple-snmpd:ro
+      - ./data:/var/lib/simple-snmpd
+      - ./logs:/var/log/simple-snmpd
+    environment:
+      - SIMPLE-SNMPD_CONFIG=/etc/simple-snmpd/simple-snmpd.conf
+      - SIMPLE-SNMPD_LOG_LEVEL=info
+      - SIMPLE-SNMPD_BIND_ADDRESS=0.0.0.0
+      - SIMPLE-SNMPD_BIND_PORT=161
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "161"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - simple-snmpd-network
+
+networks:
+  simple-snmpd-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.22.0.0/16
