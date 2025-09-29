@@ -29,6 +29,12 @@ public:
     static bool isValidOID(const std::string& oid_string);
     static bool isOIDPrefix(const std::vector<uint8_t>& oid1, const std::vector<uint8_t>& oid2);
     static int compareOIDs(const std::vector<uint8_t>& oid1, const std::vector<uint8_t>& oid2);
+    
+    // Legacy method names for backward compatibility
+    static std::string oid_to_string(const std::vector<unsigned char>& oid);
+    static std::vector<unsigned char> string_to_oid(const std::string& oid_str);
+    static int compare_oids(const std::vector<unsigned char>& oid1, const std::vector<unsigned char>& oid2);
+    static bool is_prefix(const std::vector<unsigned char>& prefix, const std::vector<unsigned char>& oid);
 };
 
 } // namespace simple_snmpd

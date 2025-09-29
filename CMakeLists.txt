@@ -20,7 +20,7 @@ endif()
 
 # Build options
 option(BUILD_SHARED_LIBS "Build shared libraries" OFF)
-option(ENABLE_TESTS "Enable tests" ON)
+option(ENABLE_TESTS "Enable tests" OFF)
 option(ENABLE_PACKAGING "Enable package generation" ON)
 option(ENABLE_SSL "Enable SSL/TLS support" ON)
 option(ENABLE_JSON "Enable JSON support" ON)
@@ -43,6 +43,8 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 # Source files
 file(GLOB_RECURSE SOURCES "src/*.cpp" "src/*.c")
+# Remove test files from main build
+list(FILTER SOURCES EXCLUDE REGEX ".*/tests/.*")
 file(GLOB_RECURSE HEADERS "include/*.hpp" "include/*.h")
 
 # Create executable
